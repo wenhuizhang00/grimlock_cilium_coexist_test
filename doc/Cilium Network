@@ -1,0 +1,182 @@
+# Cilium Network
+
+1. Check what interfaces cilium put hooks on
+```
+sudo bpftool net
+xdp:
+  # 
+
+tc:
+enp94s0f0(2)        clsact/ingress cil_from_netdev-enp94s0f0         id 7220
+cilium_net(38)      clsact/ingress cil_to_host-cilium_net            id 7205
+cilium_host(39)     clsact/ingress cil_to_host-cilium_host           id 7198
+cilium_host(39)     clsact/egress  cil_from_host-cilium_host         id 7200
+cilium_vxlan(40)    clsact/ingress cil_from_overlay-cilium_vxlan     id 7160
+cilium_vxlan(40)    clsact/egress  cil_to_overlay-cilium_vxlan       id 7157
+lxc514cbb9d354b(42) clsact/ingress cil_from_container-lxc514cbb9d354b id 7164
+lxc73bb3a956893(44) clsact/ingress cil_from_container-lxc73bb3a956893 id 7184
+lxc_health(46)      clsact/ingress cil_from_container-lxc_health     id 7176
+
+flow_dissector:
+  # 
+``
+
+2. Overview
+```
+        [ Pod1 (10.244.x.x) ]        [ Pod2 (10.244.y.y) ]
+             eth0                          eth0
+              |                              |
+        [ veth in Pod ns ]            [ veth in Pod ns ]
+              |                              |
+        [ lxc514c... ]  [ lxc73bb... ]  [ lxc_health ]
+              |                |              |
+              |   (cil_from_container-*)      |
+              +--------------+---------------+
+                             |
+                     [ cilium_host 10.0.0.231/32 ]
+                   ingress: cil_to_host-cilium_host
+                   egress : cil_from_host-cilium_host
+                             |
+                  [ cilium_net / cilium_vxlan ]
+            ingress/egress: cil_to/from_overlay / to_host
+                             |
+                        [ enp94s0f0 ]
+                   ingress: cil_from_netdev-enp94s0f0
+                             |
+                        Other Node
+
+```
+
+
+
+3. Explain
+```
+Physical: enp94s0f0
+  tc ingress: cil_from_netdev-enp94s0f0          (id 7220)
+
+Cilium v routing:
+  cilium_host
+    ip: 10.0.0.231/32
+    tc ingress: cil_to_host-cilium_host         (id 7198)
+    tc egress : cil_from_host-cilium_host       (id 7200)
+
+  cilium_net
+    tc ingress: cil_to_host-cilium_net          (id 7205)
+
+Overlay:
+  cilium_vxlan
+    tc ingress: cil_from_overlay-cilium_vxlan   (id 7160)
+    tc egress : cil_to_overlay-cilium_vxlan     (id 7157)
+
+Pod veth:
+  lxc514cbb9d354b  tc ingress: cil_from_container-lxc514c... (id 7164)
+  lxc73bb3a956893  tc ingress: cil_from_container-lxc73b...  (id 7184)
+  lxc_health       tc ingress: cil_from_container-lxc_health (id 7176)
+```
+
+4.1. Pod → Pod (same node) data path
+
+Example: PodA (10.244.1.x) → PodB (10.244.1.y) on the same Kubernetes node.
+```
+[ PodA netns ]
+  IP: 10.244.1.x
+  dev: eth0
+      ↓
+[ Node netns ]
+  dev: lxc<PodA>   (tc ingress: cil_from_container-lxc<PodA>)
+      ↓
+  dev: cilium_host
+       - tc ingress: cil_to_host-cilium_host
+       - tc egress : cil_from_host-cilium_host
+      ↓   (Cilium routing & policy: decide "same node vs remote node")
+  dev: lxc<PodB>   (tc ingress: cil_from_container-lxc<PodB>)
+      ↓
+[ PodB netns ]
+  IP: 10.244.1.y
+  dev: eth0
+
+```
+
+For same-node Pod-to-Pod traffic:
+
+- It does not go through cilium_vxlan.
+
+- It does not leave via the physical NIC.
+
+- It just loops inside the node’s network namespace.
+
+
+
+4.2. Pod → remote Pod (cross-node) data path
+
+Now assume the destination Pod is on a different node (you only have one node now, but this is the mental model for multi-node).
+```
+[ PodA netns ]
+  IP: 10.244.1.x
+  dev: eth0
+      ↓
+[ Node1 netns ]
+  dev: lxc<PodA>    (tc ingress: cil_from_container-lxc<PodA>)
+      ↓
+  dev: cilium_host  (to_host / from_host programs)
+      ↓
+  dev: cilium_vxlan (tc egress: cil_to_overlay-cilium_vxlan)
+      ↓
+  dev: enp94s0f0    (physical NIC, packet goes out)
+      ↓
+  [ physical / switch network carrying VXLAN-encapsulated traffic ]
+
+      === remote Node2 receives ===
+
+      ↓
+  dev: enpX        (Node2 physical NIC ingress)
+      ↓
+  dev: cilium_vxlan (tc ingress: cil_from_overlay-cilium_vxlan)
+      ↓   (decapsulate VXLAN, recover inner IPv4/IPv6 Pod packet)
+  dev: cilium_host / cilium_net (to_host programs do routing)
+      ↓
+  dev: lxc<PodB>   (tc ingress: cil_from_container-lxc<PodB>)
+      ↓
+[ PodB netns ]
+  IP: 10.244.Z.Z
+  dev: eth0
+
+```
+
+Compared to same-node traffic, cross-node traffic adds:
+
+ - cilium_vxlan (encap/decap), and
+
+- two physical NICs (Node1’s and Node2’s).
+
+The VXLAN outer IPs are Node1 / Node2 IPs.
+
+The inner IPs are the Pod IPs 10.244.*.*.
+
+4.3. External → Pod on this node data path
+
+Example: external host X → PodA on this node.
+
+```
+[ External Host ]
+  IP: ext_IP
+      ↓
+[ This node netns ]
+  dev: enp94s0f0 (tc ingress: cil_from_netdev-enp94s0f0)
+      ↓
+  dev: cilium_vxlan?   (if traffic is VXLAN from another Cilium node)
+   or
+  dev: cilium_host / cilium_net (to_host programs route traffic into Pod CIDR)
+      ↓
+  dev: lxc<PodA> (tc ingress: cil_from_container-lxc<PodA>)
+      ↓
+[ PodA netns ]
+  IP: 10.244.1.x
+  dev: eth0
+
+```
+
+
+
+
+
