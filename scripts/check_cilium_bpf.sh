@@ -1,4 +1,3 @@
-cat > check-cilium-bpf.sh << 'EOF'
 #!/usr/bin/env bash
 set -e
 
@@ -19,6 +18,3 @@ for dev in $DEVS; do
   sudo tc filter show dev $dev egress 2>/dev/null || echo "  (no egress filter)"
   echo
 done
-EOF
-
-chmod +x check-cilium-bpf.sh
