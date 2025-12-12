@@ -97,7 +97,7 @@ if command -v bpftool >/dev/null 2>&1; then
     echo "${DEVS}" | while read -r dev; do
       if [[ -n "${dev}" ]]; then
         echo "  -> tc qdisc del dev ${dev} clsact"
-        sudo tc qdisc del dev "${dev}" clsact 2>/dev/null || true
+        sudo tc qdisc del dev "${dev}" 2>/dev/null || true
       fi
     done
   else
@@ -111,14 +111,24 @@ fi
 echo "[3.2] Extra tc cleanup on cilium_* and lxc* interfaces..."
 for dev in $(ip -o link show | awk -F': ' '{print $2}' | grep -E '^cilium_|^lxc' || true); do
   echo "  -> tc qdisc del dev ${dev} clsact"
-  sudo tc qdisc del dev "${dev}" clsact 2>/dev/null || true
+  sudo tc qdisc del dev "${dev}" 2>/dev/null || true
 done
 
-# 3.3 Delete cilium_* interfaces
-echo "[3.3] Deleting cilium_* interfaces..."
+# 3.3 Delete cilium_* interfaces, including cilium_host and cilium_net
+echo "[3.3] Deleting cilium_* interfaces (including cilium_host / cilium_net)..."
+
+# Generic: any interface starting with cilium_
 for dev in $(ip -o link show | awk -F': ' '{print $2}' | grep '^cilium_' || true); do
   echo "  -> ip link del ${dev}"
   sudo ip link del "${dev}" 2>/dev/null || true
+done
+
+# Extra safety: explicitly try cilium_host and cilium_net
+for dev in cilium_host cilium_net; do
+  if ip link show "$dev" &>/dev/null; then
+    echo "  -> explicitly deleting ${dev}"
+    sudo ip link del "$dev" 2>/dev/null || true
+  fi
 done
 
 echo "[3.4] lxc* interfaces are tied to pods and usually disappear when pods are removed."
