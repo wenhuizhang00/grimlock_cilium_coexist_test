@@ -1,4 +1,19 @@
 #!/usr/bin/env bash
+
+
+# roll out a specific node for original 
+# kubectl -n kube-system get pod -l k8s-app=cilium -o wide | grep ash1-as21-3-s3
+# kubectl -n kube-system delete pod cilium-z9fls
+# kubectl -n kube-system get pod -l k8s-app=cilium -o wide 
+
+# roll out all
+# kubectl -n kube-system rollout restart ds/cilium
+# kubectl -n kube-system rollout status ds/cilium
+
+#  operator roll out
+# kubectl -n kube-system rollout restart deploy/cilium-operator
+# kubectl -n kube-system rollout status deploy/cilium-operator
+
 set -euo pipefail
 
 usage() {
