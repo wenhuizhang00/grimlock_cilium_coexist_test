@@ -1,0 +1,72 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: net-test
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: net-server
+  namespace: net-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: net-server
+  template:
+    metadata:
+      labels:
+        app: net-server
+    spec:
+      containers:
+      - name: netshoot
+        image: nicolaka/netshoot:latest
+        imagePullPolicy: IfNotPresent
+        command: ["sh","-lc","sleep infinity"]
+        securityContext:
+          runAsUser: 0
+          capabilities:
+            add: ["NET_ADMIN","NET_RAW"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: net-client
+  namespace: net-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: net-client
+  template:
+    metadata:
+      labels:
+        app: net-client
+    spec:
+      containers:
+      - name: netshoot
+        image: nicolaka/netshoot:latest
+        imagePullPolicy: IfNotPresent
+        command: ["sh","-lc","sleep infinity"]
+        securityContext:
+          runAsUser: 0
+          capabilities:
+            add: ["NET_ADMIN","NET_RAW"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: net-server-svc
+  namespace: net-test
+spec:
+  selector:
+    app: net-server
+  ports:
+  - name: tcp-8080
+    port: 8080
+    targetPort: 8080
+  - name: udp-5353
+    port: 5353
+    protocol: UDP
+    targetPort: 5353
+
